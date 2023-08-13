@@ -8,17 +8,29 @@ terraform {
     aws = {
       source  = "hashicorp/aws"
       version = "~> 4.0"
+<<<<<<< HEAD
       region = var.region
+=======
+>>>>>>> feature/msp-11
     }
   }
 }
 
+<<<<<<< HEAD
 # provider "aws" {
 #   region = var.region
 #   //  access_key = ""
 #   //  secret_key = ""
 #   //  If you have entered your credentials in AWS CLI before, you do not need to use these arguments.
 # }
+=======
+ provider "aws" {
+   region = var.region
+ #  //  access_key = ""
+#   //  secret_key = ""
+  # //  If you have entered your credentials in AWS CLI before, you do not need to use these arguments.
+ }
+>>>>>>> feature/msp-11
 
 resource "aws_instance" "tf-jenkins-server" {
   ami           = var.ami
@@ -104,4 +116,8 @@ output "JenkinsDNS" {
 
 output "JenkinsURL" {
   value = "http://${aws_instance.tf-jenkins-server.public_dns}:8080"
+<<<<<<< HEAD
 }
+=======
+}
+>>>>>>> feature/msp-11
