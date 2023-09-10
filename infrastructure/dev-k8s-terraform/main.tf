@@ -1,169 +1,225 @@
-terraform {
-  required_providers {
-    aws = {
-      source = "hashicorp/aws"
-      version = "~> 4.0"
-    }
-  }
-}
-
 provider "aws" {
   region  = "us-east-1"
 }
 
-data "aws_caller_identity" "current" {}
-
-data "aws_region" "current" {}
-
-locals {
-  # change here, optional
-  name = "esvo"
-  keyname = "lessonkey"
-  instancetype = "t3a.medium"
-  ami = "ami-0557a15b87f6559cf"
+module "iam" {
+  source = "./modules/IAM"
 }
 
-resource "aws_instance" "master" {
-  ami                  = local.ami
-  instance_type        = local.instancetype
-  key_name             = local.keyname
-  iam_instance_profile = aws_iam_instance_profile.ec2connectprofile.name
-  user_data            = data.template_file.master.rendered
-  vpc_security_group_ids = [aws_security_group.tf-k8s-master-sec-gr.id]
-  tags = {
-    Name = "${local.name}-kube-master"
+variable "sec-gr-mutual" {
+  default = "petclinic-k8s-mutual-sec-group"
+}
+
+variable "sec-gr-k8s-master" {
+  default = "petclinic-k8s-master-sec-group"
+}
+
+variable "sec-gr-k8s-worker" {
+  default = "petclinic-k8s-worker-sec-group"
+}
+
+data "aws_vpc" "name" {
+  default = true
+}
+
+resource "aws_security_group" "petclinic-mutual-sg" {
+  name = var.sec-gr-mutual
+  vpc_id = data.aws_vpc.name.id
+}
+
+resource "aws_security_group" "petclinic-kube-worker-sg" {
+  name = var.sec-gr-k8s-worker
+  vpc_id = data.aws_vpc.name.id
+
+  ingress {
+    protocol = "tcp"
+    from_port = 10250
+    to_port = 10250
+    security_groups = [aws_security_group.petclinic-mutual-sg.id]
   }
-}
-
-resource "aws_instance" "worker" {
-  ami                  = local.ami
-  instance_type        = local.instancetype
-  key_name             = local.keyname
-  iam_instance_profile = aws_iam_instance_profile.ec2connectprofile.name
-  vpc_security_group_ids = [aws_security_group.tf-k8s-master-sec-gr.id]
-  user_data            = data.template_file.worker.rendered
-  tags = {
-    Name = "${local.name}-kube-worker"
-  }
-  depends_on = [aws_instance.master]
-}
-
-resource "aws_iam_instance_profile" "ec2connectprofile" {
-  name = "ec2connectprofile-${local.name}"
-  role = aws_iam_role.ec2connectcli.name
-}
-
-resource "aws_iam_role" "ec2connectcli" {
-  name = "ec2connectcli-${local.name}"
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Action = "sts:AssumeRole"
-        Effect = "Allow"
-        Sid    = ""
-        Principal = {
-          Service = "ec2.amazonaws.com"
-        }
-      },
-    ]
-  })
-
-  inline_policy {
-    name = "my_inline_policy"
-
-    policy = jsonencode({
-      Version = "2012-10-17"
-      Statement = [
-        {
-          "Effect" : "Allow",
-          "Action" : "ec2-instance-connect:SendSSHPublicKey",
-          "Resource" : "arn:aws:ec2:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:instance/*",
-          "Condition" : {
-            "StringEquals" : {
-              "ec2:osuser" : "ubuntu"
-            }
-          }
-        },
-        {
-          "Effect" : "Allow",
-          "Action" : "ec2:DescribeInstances",
-          "Resource" : "*"
-        }
-      ]
-    })
-  }
-}
-
-data "template_file" "worker" {
-  template = file("worker.sh")
-  vars = {
-    region = data.aws_region.current.name
-    master-id = aws_instance.master.id
-    master-private = aws_instance.master.private_ip
-  }
-
-}
-
-data "template_file" "master" {
-  template = file("master.sh")
-}
-
-resource "aws_security_group" "tf-k8s-master-sec-gr" {
-  name = "${local.name}-k8s-master-sec-gr"
-  tags = {
-    Name = "${local.name}-k8s-master-sec-gr"
+  ingress {
+    protocol = "tcp"
+    from_port = 30000
+    to_port = 32767
+    cidr_blocks = ["0.0.0.0/0"]
   }
 
   ingress {
+    protocol = "tcp"
+    from_port = 22
+    to_port = 22
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    protocol = "udp"
+    from_port = 8472
+    to_port = 8472
+    security_groups = [aws_security_group.petclinic-mutual-sg.id]
+  }
+  
+  egress{
+    protocol = "-1"
     from_port = 0
-    protocol  = "-1"
-    to_port   = 0
-    self = true
-  }
-
-  ingress {
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
+    to_port = 0
     cidr_blocks = ["0.0.0.0/0"]
   }
+  tags = {
+    Name = "kube-worker-secgroup"
+    "kubernetes.io/cluster/petclinicCluster" = "owned"
+  }
+}
+
+resource "aws_security_group" "petclinic-kube-master-sg" {
+  name = var.sec-gr-k8s-master
+  vpc_id = data.aws_vpc.name.id
 
   ingress {
-    from_port   = 80
-    to_port     = 80
-    protocol    = "tcp"
+    protocol = "tcp"
+    from_port = 22
+    to_port = 22
     cidr_blocks = ["0.0.0.0/0"]
   }
-
   ingress {
-    from_port   = 30000
-    to_port     = 32767
-    protocol    = "tcp"
+    protocol = "tcp"
+    from_port = 80
+    to_port = 80
     cidr_blocks = ["0.0.0.0/0"]
   }
-
+  ingress {
+    protocol = "tcp"
+    from_port = 6443
+    to_port = 6443
+    cidr_blocks = ["0.0.0.0/0"]
+    #security_groups = [aws_security_group.petclinic-mutual-sg.id]
+  }
+  ingress {
+    protocol = "tcp"
+    from_port = 443
+    to_port = 443
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  ingress {
+    protocol = "tcp"
+    from_port = 2380
+    to_port = 2380
+    security_groups = [aws_security_group.petclinic-mutual-sg.id]
+  }
+  ingress {
+    protocol = "tcp"
+    from_port = 2379
+    to_port = 2379
+    security_groups = [aws_security_group.petclinic-mutual-sg.id]
+  }
+  ingress {
+    protocol = "tcp"
+    from_port = 10250
+    to_port = 10250
+    security_groups = [aws_security_group.petclinic-mutual-sg.id]
+  }
+  ingress {
+    protocol = "tcp"
+    from_port = 10251
+    to_port = 10251
+    security_groups = [aws_security_group.petclinic-mutual-sg.id]
+  }
+  ingress {
+    protocol = "tcp"
+    from_port = 10252
+    to_port = 10252
+    security_groups = [aws_security_group.petclinic-mutual-sg.id]
+  }
+  ingress {
+    protocol = "tcp"
+    from_port = 30000
+    to_port = 32767
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  ingress {
+    protocol = "udp"
+    from_port = 8472
+    to_port = 8472
+    security_groups = [aws_security_group.petclinic-mutual-sg.id]
+  }
   egress {
-    from_port   = 0
-    protocol    = "-1"
-    to_port     = 0
+    protocol = "-1"
+    from_port = 0
+    to_port = 0
     cidr_blocks = ["0.0.0.0/0"]
+  }
+  tags = {
+    Name = "kube-master-secgroup"
   }
 }
 
-
-output "master_public_dns" {
-  value = aws_instance.master.public_dns
+resource "aws_instance" "kube-master" {
+    ami = "ami-013f17f36f8b1fefb"
+    instance_type = "t3a.medium"
+    iam_instance_profile = module.iam.master_profile_name
+    vpc_security_group_ids = [aws_security_group.petclinic-kube-master-sg.id, aws_security_group.petclinic-mutual-sg.id]
+    key_name = "clarus"
+    subnet_id = "subnet-c41ba589"  # select own subnet_id of us-east-1a
+    availability_zone = "us-east-1a"
+    tags = {
+        Name = "kube-master"
+        "kubernetes.io/cluster/petclinicCluster" = "owned"
+        Project = "tera-kube-ans"
+        Role = "master"
+        Id = "1"
+        environment = "dev"
+    }
 }
 
-output "master_private_dns" {
-  value = aws_instance.master.private_dns
+resource "aws_instance" "worker-1" {
+    ami = "ami-013f17f36f8b1fefb"
+    instance_type = "t3a.medium"
+        iam_instance_profile = module.iam.worker_profile_name
+    vpc_security_group_ids = [aws_security_group.petclinic-kube-worker-sg.id, aws_security_group.petclinic-mutual-sg.id]
+    key_name = "clarus"
+    subnet_id = "subnet-0df9ab207c9b9ae77"  # select own subnet_id of us-east-1a
+    availability_zone = "us-east-1a"
+    tags = {
+        Name = "worker-1"
+        "kubernetes.io/cluster/petclinicCluster" = "owned"
+        Project = "tera-kube-ans"
+        Role = "worker"
+        Id = "1"
+        environment = "dev"
+    }
 }
 
-output "worker_public_dns" {
-  value = aws_instance.worker.public_dns
+resource "aws_instance" "worker-2" {
+    ami = "ami-013f17f36f8b1fefb"
+    instance_type = "t3a.medium"
+    iam_instance_profile = module.iam.worker_profile_name
+    vpc_security_group_ids = [aws_security_group.petclinic-kube-worker-sg.id, aws_security_group.petclinic-mutual-sg.id]
+    key_name = "clarus"
+    subnet_id = "subnet-0df9ab207c9b9ae77"  # select own subnet_id of us-east-1a
+    availability_zone = "us-east-1a"
+    tags = {
+        Name = "worker-2"
+        "kubernetes.io/cluster/petclinicCluster" = "owned"
+        Project = "tera-kube-ans"
+        Role = "worker"
+        Id = "2"
+        environment = "dev"
+    }
 }
 
-output "worker_private_dns" {
-  value = aws_instance.worker.private_dns
+output kube-master-ip {
+  value       = aws_instance.kube-master.public_ip
+  sensitive   = false
+  description = "public ip of the kube-master"
+}
+
+output worker-1-ip {
+  value       = aws_instance.worker-1.public_ip
+  sensitive   = false
+  description = "public ip of the worker-1"
+}
+
+output worker-2-ip {
+  value       = aws_instance.worker-2.public_ip
+  sensitive   = false
+  description = "public ip of the worker-2"
 }
